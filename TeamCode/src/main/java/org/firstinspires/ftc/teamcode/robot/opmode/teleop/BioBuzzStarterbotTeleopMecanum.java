@@ -31,7 +31,15 @@ import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.VoltageSensor;
+import com.qualcomm.robotcore.util.ElapsedTime;
+import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 
+import com.pedropathing.algorithm.ForesightConfig;
+import com.pedropathing.follower.Follower;
+import com.pedropathing.localization.Localizer;
+import com.pedropathing.math.Pose;
+import com.pedropathing.math.Twist;
 import com.pedropathing.revhub.drivetrains.MecanumConfig;
 
 import org.firstinspires.ftc.teamcode.pedro.Constants;
@@ -49,6 +57,12 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
  * applied to the motor directly.
  * Since the dynamics of a launcher wheel system varies greatly from those of most other FTC mechanisms,
  * we will also need to adjust the "PIDF" coefficients with some that are a better fit for our application.
+ *
+ * Pedro Pathing debug telemetry: the bottom of the telemetry shows what Pedro Pathing's localizer
+ * (the Pinpoint) measures, checks it against the way the driver is steering, and compares the
+ * robot's top speed with the Foresight tuning in Constants. Pedro only watches here; the sticks
+ * still drive the motors directly. It also runs during INIT, so you can push the robot by hand and
+ * watch the pose change. Press BACK to reset the pose and the checks.
  */
 
 @TeleOp(name = "Mec BioBuzz StarterBot Teleop", group = "StarterBot")
@@ -95,10 +109,58 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
     double intakePower;
 
     /*
+     * Pedro Pathing debug. These stay null if Pedro can't start (for example, no Pinpoint in the
+     * robot configuration); the teleop still drives, and telemetry shows why.
+     */
+    private Localizer localizer = null;
+    private GoBildaPinpointDriver pinpoint = null;
+    private String pedroError = null;
+    private VoltageSensor battery = null;
+    private final ElapsedTime loopTimer = new ElapsedTime();
+
+    // Fastest straight-line speeds seen at full stick, to compare with the Foresight tuning
+    private double peakForwardSpeed;
+    private double peakStrafeSpeed;
+
+    // Results of checking that odometry agrees with the direction the driver is steering
+    private String forwardCheck;
+    private String strafeCheck;
+    private String turnCheck;
+
+    // Stick must be past this (and the other sticks near center) to count as a clean test move
+    private static final double CHECK_STICK = 0.5;
+    private static final double FULL_STICK = 0.9;
+    private static final double OTHER_STICKS_CENTERED = 0.2;
+    // The robot must be moving at least this fast for a direction check to count
+    private static final double CHECK_SPEED_IN_PER_S = 5.0;
+    private static final double CHECK_TURN_RAD_PER_S = 0.5;
+    // Measured top speed this far from the Foresight value means the tuning is likely stale
+    private static final double SPEED_MISMATCH_PERCENT = 15.0;
+
+    /*
      * Code to run ONCE when the driver hits INIT
      */
     @Override
     public void init() {
+
+        /*
+         * Start Pedro Pathing first, the same way autonomous does, so we test the real
+         * configuration in Constants. Building it sets up the drive motors too, so we do it before
+         * our own motor setup below; that way our directions and brake mode are the ones that stick.
+         */
+        try {
+            Follower follower = Constants.create(hardwareMap);
+            localizer = follower.localizer;
+            pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, Constants.localizerConfig.name.get());
+        } catch (Exception e) {
+            localizer = null;
+            pedroError = e.getMessage();
+        }
+        for (VoltageSensor sensor : hardwareMap.voltageSensor) {
+            battery = sensor;
+            break;
+        }
+        resetPedroChecks();
 
         /*
          * Initialize the hardware variables. Note that the strings used here as parameters
@@ -176,6 +238,12 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
      */
     @Override
     public void init_loop() {
+        /*
+         * Show Pedro Pathing telemetry before START, so you can check the Pinpoint is ready and
+         * push the robot by hand to see the pose change.
+         */
+        telemetry.addData("Status", "Initialized");
+        addPedroTelemetry(0, 0, 0);
     }
 
     /*
@@ -235,6 +303,8 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
          */
         telemetry.addData("Motors", "left (%.2f), right (%.2f)", leftFrontPower, rightFrontPower);
         telemetry.addData("Triggers", "left (%.2f), right (%.2f)", gamepad1.left_trigger, gamepad1.right_trigger);
+
+        addPedroTelemetry(-gamepad1.left_stick_y, gamepad1.left_stick_x, gamepad1.right_stick_x);
     }
 
     /*
@@ -268,6 +338,133 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
         rightFrontDrive.setPower(rightFrontPower);
         leftBackDrive.setPower(leftBackPower);
         rightBackDrive.setPower(rightBackPower);
+    }
+
+    /*
+     * Pedro Pathing debug telemetry. forward, strafe and rotate are what the driver is asking for
+     * (same as mecanumDrive: forward, right and clockwise are positive), so we can check that the
+     * odometry agrees with the way the robot is being driven.
+     *
+     * Pedro measures the robot with x forward, y to the LEFT, and heading counterclockwise, so
+     * strafing right should read a negative y speed and turning right a negative turn rate.
+     */
+    void addPedroTelemetry(double forward, double strafe, double rotate) {
+        double loopMs = loopTimer.milliseconds();
+        loopTimer.reset();
+
+        telemetry.addLine();
+        telemetry.addLine("--- Pedro Pathing (BACK resets) ---");
+        if (localizer == null) {
+            telemetry.addData("Pedro", "NOT RUNNING: %s", pedroError);
+            return;
+        }
+
+        if (gamepad1.back) {
+            localizer.setPose(Pose.zero());
+            resetPedroChecks();
+        }
+        localizer.update();
+        Pose pose = localizer.pose();
+        Twist twist = localizer.twist();
+
+        /*
+         * READY is good. CALIBRATING should only last a moment after INIT; keep the robot still.
+         * Any FAULT status means a pod is unplugged or the Pinpoint isn't wired right.
+         */
+        telemetry.addData("Pinpoint", pinpoint.getDeviceStatus());
+
+        /*
+         * Push the robot a measured distance (for example 48 inches along a tile seam) and check
+         * x or y changes by the same amount. If not, the pod type in Constants is wrong.
+         */
+        telemetry.addData("Pose", "x %.1f in, y %.1f in, heading %.1f deg",
+                pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+        telemetry.addData("Speed", "fwd %.1f, left %.1f in/s, turn %.0f deg/s",
+                twist.vx, twist.vy, Math.toDegrees(twist.omega));
+
+        /*
+         * Direction checks. These assume the robot physically moves the way the stick says; if it
+         * doesn't, fix the motor directions first (StarterBot Hardware Test helps).
+         */
+        boolean onlyForward = Math.abs(forward) > CHECK_STICK
+                && Math.abs(strafe) < OTHER_STICKS_CENTERED && Math.abs(rotate) < OTHER_STICKS_CENTERED;
+        boolean onlyStrafe = Math.abs(strafe) > CHECK_STICK
+                && Math.abs(forward) < OTHER_STICKS_CENTERED && Math.abs(rotate) < OTHER_STICKS_CENTERED;
+        boolean onlyTurn = Math.abs(rotate) > CHECK_STICK
+                && Math.abs(forward) < OTHER_STICKS_CENTERED && Math.abs(strafe) < OTHER_STICKS_CENTERED;
+
+        if (onlyForward && Math.abs(twist.vx) > CHECK_SPEED_IN_PER_S) {
+            forwardCheck = Math.signum(twist.vx) == Math.signum(forward)
+                    ? "OK"
+                    : "WRONG: odometry says the other way. Flip xPodDirection in Constants";
+        }
+        if (onlyStrafe && Math.abs(twist.vy) > CHECK_SPEED_IN_PER_S) {
+            strafeCheck = Math.signum(twist.vy) == -Math.signum(strafe)
+                    ? "OK"
+                    : "WRONG: odometry says the other way. Flip yPodDirection in Constants";
+        }
+        if (onlyTurn && Math.abs(twist.omega) > CHECK_TURN_RAD_PER_S) {
+            turnCheck = Math.signum(twist.omega) == -Math.signum(rotate)
+                    ? "OK"
+                    : "WRONG: heading turns the other way. Is the Pinpoint mounted upside down?";
+        }
+        telemetry.addData("Forward check", forwardCheck);
+        telemetry.addData("Strafe check", strafeCheck);
+        telemetry.addData("Turn check", turnCheck);
+
+        /*
+         * Foresight check. The Foresight tuner measured the robot's top speed at full power. If
+         * the robot is now much faster or slower at full stick (new motors, wheels, gearing,
+         * weight, or motor directions changed since tuning), Foresight's numbers are stale.
+         */
+        if (Math.abs(forward) > FULL_STICK && Math.abs(strafe) < OTHER_STICKS_CENTERED
+                && Math.abs(rotate) < OTHER_STICKS_CENTERED) {
+            peakForwardSpeed = Math.max(peakForwardSpeed, Math.abs(twist.vx));
+        }
+        if (Math.abs(strafe) > FULL_STICK && Math.abs(forward) < OTHER_STICKS_CENTERED
+                && Math.abs(rotate) < OTHER_STICKS_CENTERED) {
+            peakStrafeSpeed = Math.max(peakStrafeSpeed, Math.abs(twist.vy));
+        }
+
+        ForesightConfig foresight = Constants.foresightConfig;
+        telemetry.addLine("--- Foresight ---");
+        telemetry.addData("Top fwd speed", compareSpeed(peakForwardSpeed,
+                foresight.maxAchievableForwardVelocity.get(), "drive forward at full stick"));
+        telemetry.addData("Top strafe speed", compareSpeed(peakStrafeSpeed,
+                foresight.maxAchievableStrafeVelocity.get(), "strafe at full stick"));
+        telemetry.addData("Natural decel", "fwd %.1f, strafe %.1f in/s^2",
+                foresight.naturalForwardDeceleration.get(), foresight.naturalStrafeDeceleration.get());
+
+        // Low battery makes the robot slower than when it was tuned; a slow loop makes paths jerky
+        if (battery != null) telemetry.addData("Battery", "%.2f V", battery.getVoltage());
+        telemetry.addData("Loop time", "%.0f ms", loopMs);
+    }
+
+    /*
+     * Describes the fastest speed seen next to the speed Foresight was tuned with.
+     */
+    private static String compareSpeed(double measured, double tuned, String howToTest) {
+        if (measured < 1) {
+            return String.format("tuned %.1f in/s; %s to test", tuned, howToTest);
+        }
+        double percent = (measured - tuned) / tuned * 100;
+        String verdict;
+        if (percent > SPEED_MISMATCH_PERCENT) {
+            verdict = "FASTER than tuned: re-run ForesightTuner";
+        } else if (percent < -SPEED_MISMATCH_PERCENT) {
+            verdict = "slower: try a longer run; if it stays low check battery or re-tune";
+        } else {
+            verdict = "OK";
+        }
+        return String.format("%.1f vs tuned %.1f in/s (%+.0f%%) %s", measured, tuned, percent, verdict);
+    }
+
+    private void resetPedroChecks() {
+        peakForwardSpeed = 0;
+        peakStrafeSpeed = 0;
+        forwardCheck = "not tested: push left stick forward";
+        strafeCheck = "not tested: push left stick right";
+        turnCheck = "not tested: push right stick right";
     }
 
     void launch() {
