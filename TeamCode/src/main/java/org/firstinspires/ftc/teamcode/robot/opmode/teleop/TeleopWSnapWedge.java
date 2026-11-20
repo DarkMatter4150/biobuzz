@@ -201,7 +201,7 @@ public class TeleopWSnapWedge extends OpMode {
         windmillServo = hardwareMap.get(CRServo.class, "windmillServo");
         leftIntakeServo = hardwareMap.get(Servo.class, "left_intake_servo");
         rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
-        frontWedge = new FrontWedge(hardwareMap); // starts stowed
+        frontWedge = new FrontWedge(hardwareMap); // doesn't move at INIT
 
         /*
          * To drive forward, most robots need the motors on one side to be reversed,
@@ -275,6 +275,7 @@ public class TeleopWSnapWedge extends OpMode {
      */
     @Override
     public void start() {
+        frontWedge.holdRememberedState(); // stays stowed/deployed as the last opmode left it
     }
 
     /*

@@ -70,7 +70,8 @@ public class ShootAndPark extends LinearOpMode {
         rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
 
         /*
-         * FRONT WEDGE: it stows here at INIT and stays stowed unless you add it below. To use it,
+         * FRONT WEDGE: it doesn't move at INIT. At START it holds the state the last opmode left
+         * it in (stowed or deployed) and stays there unless you add it below. To use it,
          * call frontWedge.deploy() or frontWedge.stow() anywhere after waitForStart(), for example
          * just before a follower.follow(...). The servos move on their own, so you don't need a
          * loop for it. If the wedge must be all the way out before the robot drives, wait about
@@ -82,7 +83,7 @@ public class ShootAndPark extends LinearOpMode {
          *         follower.update();
          *     }
          */
-        FrontWedge frontWedge = new FrontWedge(hardwareMap); // starts stowed
+        FrontWedge frontWedge = new FrontWedge(hardwareMap); // doesn't move at INIT
 
         intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
@@ -94,6 +95,7 @@ public class ShootAndPark extends LinearOpMode {
 
         telemetry.update();
         waitForStart();
+        frontWedge.holdRememberedState(); // stays stowed/deployed as the last opmode left it
 
         /*
          * 1. LAUNCH. The robot stays still; follower.update() keeps the position up to date.

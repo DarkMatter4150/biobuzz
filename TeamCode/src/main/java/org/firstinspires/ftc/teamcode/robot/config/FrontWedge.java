@@ -10,8 +10,17 @@ import com.qualcomm.robotcore.util.Range;
  * The front wedge, shared by every opmode so the servo names and positions live in one place.
  *
  * Two Axon servos (in servo mode, not continuous), one on each side, swing the wedge about
- * ROTATION_DEGREES to deploy it and back to stow it. Creating a FrontWedge moves it to stowed, so
- * it's in a known spot from INIT.
+ * ROTATION_DEGREES to deploy it and back to stow it.
+ *
+ * INIT does NOT move it: creating a FrontWedge only sets up the servos and never sends a position,
+ * so the wedge stays exactly where it is. Call holdRememberedState() once at START; that sends it
+ * to whichever state the last opmode left it in (stowed or deployed), which is normally where it
+ * already sits, so it doesn't move, it just starts holding.
+ *
+ * Memory: the state is kept in a static variable, which keeps its value when one opmode stops and
+ * another starts (same idea as LeftServoMemory). It goes back to stowed when the Robot Controller
+ * app restarts or the robot is powered off. So after a restart, if the wedge was left deployed,
+ * it will swing to stowed at START.
  *
  * SERVO_RANGE_DEGREES is the servo's full travel, which is what positions 0 to 1 cover. On an Axon
  * that's whatever range it was set to with the Axon programmer. To check it, send 0.0 and then 1.0
@@ -29,8 +38,10 @@ import com.qualcomm.robotcore.util.Range;
  * Trim: both servos hold the same wedge, so if one is even slightly off from the other they push
  * against each other all the time (hot servos, high current, stripped gears). First line up both
  * horns at the stowed position before tightening the wedge on. If one side still sits a little
- * ahead or behind, nudge it with LEFT_TRIM or RIGHT_TRIM: small values like 0.01 (about 2 degrees
- * on a 180 degree servo). Change the sign if it moves the wrong way. Tune it with the wedge stowed
+ * ahead or behind, nudge it with LEFT_TRIM_DEG or RIGHT_TRIM_DEG: a few degrees at most (they
+ * are in degrees, not servo position). Change the sign if it moves the wrong way. Note a trim
+ * can't push past the ends of the servo's travel: with DEPLOYED_POSITION at 0.0, a negative trim
+ * on that side gets clipped, so trim the OTHER servo instead. Tune it with the wedge stowed
  * and deployed: the servos should be quiet (no humming or buzzing) in both spots.
  *
  * Hard stops: if a position presses the wedge into the frame, the servo pushes the whole time it
@@ -39,29 +50,36 @@ import com.qualcomm.robotcore.util.Range;
  * Robot configuration names: "left_wedge_servo" and "right_wedge_servo".
  */
 public class FrontWedge {
-    public static final double ROTATION_DEGREES = 100;
+    public static final double ROTATION_DEGREES = 110;
     public static final double SERVO_RANGE_DEGREES = 180;
-    public static final double STOWED_POSITION = 0.0;
-    public static final double DEPLOYED_POSITION = STOWED_POSITION + ROTATION_DEGREES / SERVO_RANGE_DEGREES;
+    public static final double DEPLOYED_POSITION = 3.0;
+    public static final double STOWED_POSITION = DEPLOYED_POSITION + ROTATION_DEGREES / SERVO_RANGE_DEGREES;
 
-    // Per-side adjustment added to the position, so the two sides line up exactly
-    public static final double LEFT_TRIM = 0.0;
-    public static final double RIGHT_TRIM = 0.0;
+    // Per-side adjustment in DEGREES added to the position, so the two sides line up exactly
+    public static final double LEFT_TRIM_DEG = 0.0;
+    public static final double RIGHT_TRIM_DEG = 0.0;
 
     // Axon servos take a 500-2500 microsecond signal
     private static final PwmControl.PwmRange AXON_PWM_RANGE = new PwmControl.PwmRange(500, 2500);
 
+    // Last commanded state. Static so it carries over from one opmode to the next.
+    private static boolean deployed = false;
+
     private final Servo left;
     private final Servo right;
-    private boolean deployed;
 
+    /** Sets up the servos without moving them. */
     public FrontWedge(HardwareMap hardwareMap) {
         left = hardwareMap.get(Servo.class, "left_wedge_servo");
         right = hardwareMap.get(Servo.class, "right_wedge_servo");
         useAxonPwmRange(left);
         useAxonPwmRange(right);
         right.setDirection(Servo.Direction.REVERSE);
-        stow();
+    }
+
+    /** Call once at START: holds the wedge in the state the last opmode left it in. */
+    public void holdRememberedState() {
+        set(deployed);
     }
 
     public void deploy() {
@@ -83,8 +101,8 @@ public class FrontWedge {
     private void set(boolean deploy) {
         deployed = deploy;
         double position = deploy ? DEPLOYED_POSITION : STOWED_POSITION;
-        left.setPosition(Range.clip(position + LEFT_TRIM, 0, 1));
-        right.setPosition(Range.clip(position + RIGHT_TRIM, 0, 1));
+        left.setPosition(Range.clip(position + LEFT_TRIM_DEG / SERVO_RANGE_DEGREES, 0, 1));
+        right.setPosition(Range.clip(position + RIGHT_TRIM_DEG / SERVO_RANGE_DEGREES, 0, 1));
     }
 
     private static void useAxonPwmRange(Servo servo) {

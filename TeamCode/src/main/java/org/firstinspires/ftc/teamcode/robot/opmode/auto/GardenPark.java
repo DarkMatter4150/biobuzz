@@ -37,7 +37,8 @@ public class GardenPark extends LinearOpMode {
     /*
      * Autonomous routine.
      *
-     * FRONT WEDGE: it stows at INIT and stays stowed unless you add it here. To use it, put
+     * FRONT WEDGE: it doesn't move at INIT. At START it holds the state the last opmode left it
+     * in (stowed or deployed) and stays there unless you add it here. To use it, put
      * these steps in the sequence where you need them (instant and waitMs come from
      * com.pedropathing.ivy.commands.Commands):
      *
@@ -58,11 +59,12 @@ public class GardenPark extends LinearOpMode {
     public void runOpMode() {
         Scheduler.reset();
         follower = Constants.create(hardwareMap);
-        frontWedge = new FrontWedge(hardwareMap); // starts stowed
+        frontWedge = new FrontWedge(hardwareMap); // doesn't move at INIT
         follower.setPose(start);
         follower.update();
 
         waitForStart();
+        frontWedge.holdRememberedState(); // stays stowed/deployed as the last opmode left it
         schedule(autoRoutine());
 
         while (opModeIsActive()) {
