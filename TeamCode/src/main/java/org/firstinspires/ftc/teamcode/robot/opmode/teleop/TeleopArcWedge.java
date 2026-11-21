@@ -82,6 +82,7 @@ import org.firstinspires.ftc.teamcode.robot.config.LeftServoMemory;
  *   A                 arc mode on / off
  *   left stick X      move along the arc
  *   dpad up / down    arc farther / closer by ARC_RADIUS_STEP_IN (stays until the opmode ends)
+ *   dpad right / left run the windmill forward / backward
  *   right stick X     cancels arc mode (the driver took over turning), like it cancels a snap
  *   X / B snaps       ignored while arc mode is on
  *
@@ -1027,7 +1028,14 @@ public class TeleopArcWedge extends OpMode {
             windmillServo.setPower(1);
             intakePower += 0.5;
         } else {
-            windmillServo.setPower(0);
+            // Dpad right runs the windmill forward, dpad left runs it backward
+            if (gamepad1.dpad_right) {
+                windmillServo.setPower(1);
+            } else if (gamepad1.dpad_left) {
+                windmillServo.setPower(-1);
+            } else {
+                windmillServo.setPower(0);
+            }
         }
     }
 }

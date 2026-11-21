@@ -30,7 +30,11 @@ import com.qualcomm.robotcore.util.Range;
  * which cuts off the ends of their travel. We set the full 500-2500 so 0 to 1 covers the whole
  * programmed range and the angle math above comes out right.
  *
- * Direction: the right servo is mirrored from the left, so we reverse it here; then the same
+ * Direction (LEFT_DIRECTION / RIGHT_DIRECTION): set so the same position moves both sides the
+ * same way. Originally only the right was reversed, but the left then deployed backwards, so now
+ * both are. Changing a direction moves that servo's stowed spot to the other end of its travel,
+ * so its horn has to be re-mounted afterwards (see WedgeServoTuner). Original note: the right
+ * servo is mirrored from the left, so we reverse it here; then the same
  * position moves both sides the same way. Reverse in ONE place only: if a servo is also reversed
  * in the Axon programmer, the two cancel out. If one side swings the wrong way, reverse the other
  * servo here instead.
@@ -40,8 +44,8 @@ import com.qualcomm.robotcore.util.Range;
  * horns at the stowed position before tightening the wedge on. If one side still sits a little
  * ahead or behind, nudge it with LEFT_TRIM_DEG or RIGHT_TRIM_DEG: a few degrees at most (they
  * are in degrees, not servo position). Change the sign if it moves the wrong way. Note a trim
- * can't push past the ends of the servo's travel: with DEPLOYED_POSITION at 0.0, a negative trim
- * on that side gets clipped, so trim the OTHER servo instead. Tune it with the wedge stowed
+ * can't push past the ends of the servo's travel: stowed is at 1.0, so a positive trim there
+ * gets clipped; use a negative trim on the OTHER servo instead. Tune it with the wedge stowed
  * and deployed: the servos should be quiet (no humming or buzzing) in both spots.
  *
  * Hard stops: if a position presses the wedge into the frame, the servo pushes the whole time it
@@ -50,14 +54,21 @@ import com.qualcomm.robotcore.util.Range;
  * Robot configuration names: "left_wedge_servo" and "right_wedge_servo".
  */
 public class FrontWedge {
-    public static final double ROTATION_DEGREES = 110;
-    public static final double SERVO_RANGE_DEGREES = 180;
-    public static final double DEPLOYED_POSITION = 3.0;
-    public static final double STOWED_POSITION = DEPLOYED_POSITION + ROTATION_DEGREES / SERVO_RANGE_DEGREES;
+    public static final double ROTATION_DEGREES = 153;
+    public static final double SERVO_RANGE_DEGREES = 180.0;
+    // Stowed sits at the 1.0 end of the servo's travel, so deployed is ROTATION_DEGREES back from it
+    public static final double STOWED_POSITION = 17.0 / SERVO_RANGE_DEGREES;
+    public static final double DEPLOYED_POSITION = STOWED_POSITION + ROTATION_DEGREES / SERVO_RANGE_DEGREES;
+
+
+    // Both reversed: tested on the robot, the left servo deployed the wrong way when only the
+    // right was reversed (one Axon is probably already reversed in the Axon programmer).
+    public static final Servo.Direction LEFT_DIRECTION = Servo.Direction.FORWARD;
+    public static final Servo.Direction RIGHT_DIRECTION = Servo.Direction.FORWARD;
 
     // Per-side adjustment in DEGREES added to the position, so the two sides line up exactly
     public static final double LEFT_TRIM_DEG = 0.0;
-    public static final double RIGHT_TRIM_DEG = 0.0;
+    public static final double RIGHT_TRIM_DEG = 2.0;
 
     // Axon servos take a 500-2500 microsecond signal
     private static final PwmControl.PwmRange AXON_PWM_RANGE = new PwmControl.PwmRange(500, 2500);
@@ -74,7 +85,8 @@ public class FrontWedge {
         right = hardwareMap.get(Servo.class, "right_wedge_servo");
         useAxonPwmRange(left);
         useAxonPwmRange(right);
-        right.setDirection(Servo.Direction.REVERSE);
+        left.setDirection(LEFT_DIRECTION);
+        right.setDirection(RIGHT_DIRECTION);
     }
 
     /** Call once at START: holds the wedge in the state the last opmode left it in. */

@@ -62,7 +62,7 @@ public class ShootPickupAndPark extends LinearOpMode {
     private final Pose startToPickupPrepCtrlPoint = poseFactory.of(40.0, 19.0, 270);
 
     private final Pose pickupPrep = poseFactory.of(30.0, 7.5, 225);
-    private final Pose pickup = poseFactory.of(8.5, 7.5, 180);
+    private final Pose pickup = poseFactory.of(10, 10, 270);
     private final Pose pickupToEndCtrlPoint = poseFactory.of(21.0, 50.0, 270);
     private final Pose end = poseFactory.of(8.5, 96.0, 0);
 
