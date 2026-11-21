@@ -1,0 +1,246 @@
+package org.firstinspires.ftc.teamcode.robot.opmode.auto;
+
+import com.pedropathing.api.Paths;
+import com.pedropathing.api.PoseFactory;
+import com.pedropathing.config.Modifier;
+import com.pedropathing.follower.Follower;
+import com.pedropathing.math.Pose;
+import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.ElapsedTime;
+
+import org.firstinspires.ftc.teamcode.pedro.Constants;
+import org.firstinspires.ftc.teamcode.robot.config.FrontWedge;
+import org.firstinspires.ftc.teamcode.robot.config.LeftServoMemory;
+
+/*
+ * Autonomous for the mecanum StarterBot, using the same hardware and launch logic as
+ * BioBuzzStarterbotTeleopMecanum:
+ *
+ *   1. LAUNCH: spin the launcher up for LAUNCH_SECONDS. Once it is at speed, the windmill
+ *      feeds elements into it. Only the windmill runs; the intake and intake servos stay
+ *      off. In the last JIGGLE_SECONDS the robot drives JIGGLE_INCHES in +y and back.
+ *   2. PICKUP: curve from start to pickupPrep through startToPickupPrepCtrlPoint with Pedro
+ *      Pathing, then drive straight from pickupPrep to pickup, running the intake the whole way.
+ *      Both legs run at PICKUP_SPEED_SCALE of top speed, then the robot pauses for
+ *      PICKUP_PAUSE_SECONDS at the pickup spot.
+ *   3. PARK: curve from pickup to end through pickupToEndCtrlPoint, then hold that spot until
+ *      the end of autonomous.
+ *
+ * Pedro Pathing uses the Pinpoint from Constants to know where the robot is.
+ */
+@Autonomous(name = "TestSPAP", group = "Compete")
+@Disabled
+public class TestSPAP extends LinearOpMode {
+
+    // Keep these in sync with BioBuzzStarterbotTeleopMecanum
+    private static final int LAUNCHER_TARGET_VELOCITY = 1250; // 2678 RPM
+    private static final int LAUNCHER_MIN_VELOCITY = 1200;    // 2571 RPM
+    private static final double FEED_INTAKE_POWER = 0.5;
+    private static final double PICKUP_INTAKE_POWER = 1.0;
+
+    private static final double LAUNCH_SECONDS = 7.0;
+
+    // In the last JIGGLE_SECONDS of the launch, drive JIGGLE_INCHES in +y and back to "jiggle"
+    // elements loose
+    private static final double JIGGLE_SECONDS = 2.0;
+    private static final double JIGGLE_INCHES = 3.0;
+
+    // The pickup phase drives 40% slower than full speed (60% of the robot's top forward speed)
+    // so the intake has time to grab elements, then pauses at the pickup spot before parking.
+    private static final double PICKUP_SPEED_SCALE = 0.2;
+    private static final double PICKUP_PAUSE_SECONDS = 1.0;
+
+    private DcMotor intake;
+    private Servo leftIntakeServo;
+    private CRServo rightIntakeServo;
+    private CRServo windmillServo;
+
+    private final PoseFactory poseFactory = PoseFactory.degrees();
+
+    private final Pose start = poseFactory.of(57.0, 9.0, 270);
+    private final Pose startToPickupPrepCtrlPoint = poseFactory.of(40.0, 19.0, 270);
+
+    private final Pose pickupPrep = poseFactory.of(30.0, 7.5, 225);
+    private final Pose pickup = poseFactory.of(10, 10, 270);
+    private final Pose pickupToEndCtrlPoint = poseFactory.of(21.0, 50.0, 270);
+    private final Pose end = poseFactory.of(8.5, 96.0, 0);
+
+    @Override
+    public void runOpMode() {
+        /*
+         * Pedro Pathing sets up the drive motors from Constants, so we don't touch them here.
+         * The robot's starting spot is (0, 0) facing 0 degrees; everything is measured from there.
+         */
+        Follower follower = Constants.create(hardwareMap);
+        follower.setPose(start);
+
+        intake = hardwareMap.get(DcMotor.class, "intake");
+        DcMotorEx launcher = hardwareMap.get(DcMotorEx.class, "launcher");
+        windmillServo = hardwareMap.get(CRServo.class, "windmillServo");
+        leftIntakeServo = hardwareMap.get(Servo.class, "left_intake_servo");
+        rightIntakeServo = hardwareMap.get(CRServo.class, "right_intake_servo");
+
+        /*
+         * FRONT WEDGE: it doesn't move at INIT. At START it holds the state the last opmode left
+         * it in (stowed or deployed) and stays there unless you add it below. To use it,
+         * call frontWedge.deploy() or frontWedge.stow() anywhere after waitForStart(), for example
+         * just before a follower.follow(...). The servos move on their own, so you don't need a
+         * loop for it. If the wedge must be all the way out before the robot drives, wait about
+         * half a second first, still calling follower.update():
+         *
+         *     frontWedge.deploy();
+         *     ElapsedTime wedgeTimer = new ElapsedTime();
+         *     while (opModeIsActive() && wedgeTimer.seconds() < 0.5) {
+         *         follower.update();
+         *     }
+         */
+        FrontWedge frontWedge = new FrontWedge(hardwareMap); // doesn't move at INIT
+
+        intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        launcher.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        launcher.setPIDFCoefficients(DcMotor.RunMode.RUN_USING_ENCODER, new PIDFCoefficients(40, 0, 0, 12.5));
+        rightIntakeServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        windmillServo.setDirection(DcMotorSimple.Direction.REVERSE);
+        leftIntakeServo.setPosition(LeftServoMemory.position());
+        setFeed(0);
+
+        telemetry.update();
+        waitForStart();
+        frontWedge.holdRememberedState(); // stays stowed/deployed as the last opmode left it
+
+        /*
+         * 1. LAUNCH. The robot stays still except for a short +y jiggle at the end;
+         *    follower.update() keeps the position up to date.
+         */
+        Pose jiggle = poseFactory.of(start.x(), start.y() + JIGGLE_INCHES, 270);
+        int jiggleStep = 0; // 0 = not started, 1 = moving out, 2 = moving back
+
+        ElapsedTime launchTimer = new ElapsedTime();
+        while (opModeIsActive() && launchTimer.seconds() < LAUNCH_SECONDS) {
+            follower.update();
+
+            // In the last JIGGLE_SECONDS, nudge +y and back to shake loose any stuck elements
+            if (jiggleStep == 0 && LAUNCH_SECONDS - launchTimer.seconds() <= JIGGLE_SECONDS) {
+                follower.follow(Paths.line(start, jiggle).linear(start, jiggle));
+                jiggleStep = 1;
+            } else if (jiggleStep == 1 && !follower.following()) {
+                follower.follow(Paths.line(jiggle, start).linear(jiggle, start));
+                jiggleStep = 2;
+            }
+
+            launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
+            boolean atSpeed = launcher.getVelocity() > LAUNCHER_MIN_VELOCITY;
+            windmillServo.setPower(atSpeed ? 1 : 0); // windmill only; the intake stays off while launching
+
+            telemetry.addData("Step", "LAUNCH (%.1f s left)", LAUNCH_SECONDS - launchTimer.seconds());
+            telemetry.addData("Launcher", "%.0f / %d ticks/s %s", launcher.getVelocity(),
+                    LAUNCHER_TARGET_VELOCITY, atSpeed ? "(feeding)" : "(spinning up)");
+            addPoseTelemetry(follower);
+            telemetry.update();
+        }
+        launcher.setVelocity(0);
+        setFeed(0);
+
+
+        /*
+         * 2. PICKUP. Run the intake so it grabs elements on the way. The windmill stays off so
+         *    nothing goes to the launcher. This happens in two phases:
+         *      a. curve from the start to pickupPrep through startToPickupPrepCtrlPoint
+         *      b. drive straight from pickupPrep in to the pickup spot
+         */
+        setIntake(PICKUP_INTAKE_POWER);
+
+        // maxPathSpeed is a fraction of top speed (0-1), not a speed in in/s
+        Modifier slowForPickup = Constants.foresightConfig.maxPathSpeed.at(PICKUP_SPEED_SCALE);
+
+        follower.follow(Paths.curve(start, startToPickupPrepCtrlPoint, pickupPrep)
+                .linear(start, pickupPrep));
+        followPath(follower, "PICKUP PREP (intake running, slow)");
+
+        follower.follow(Paths.line(pickupPrep, pickup).linear(pickupPrep, pickup).with(slowForPickup));
+        followPath(follower, "PICKUP (intake running, slow)");
+
+        // Pause at the pickup spot, still holding position and running the intake.
+        ElapsedTime pauseTimer = new ElapsedTime();
+        while (opModeIsActive() && pauseTimer.seconds() < PICKUP_PAUSE_SECONDS) {
+            follower.update();
+
+            telemetry.addData("Step", "PICKUP PAUSE (%.1f s left)", PICKUP_PAUSE_SECONDS - pauseTimer.seconds());
+            addPoseTelemetry(follower);
+            telemetry.update();
+        }
+
+        setIntake(0);
+
+        /*
+         * 3. PARK. Curve from the pickup spot to the end, then hold that spot until the end of
+         *    autonomous.
+         */
+        follower.follow(Paths.curve(pickup, pickupToEndCtrlPoint, end).linear(pickup, end));
+
+        while (opModeIsActive()) {
+            follower.update();
+
+            telemetry.addData("Step", follower.following() ? "PARK" : "DONE (holding position)");
+            if (follower.following()) {
+                telemetry.addData("Distance left (in)", "%.1f", follower.distanceToEndpoint());
+            }
+            addPoseTelemetry(follower);
+            telemetry.update();
+        }
+
+        follower.stop();
+        launcher.setVelocity(0);
+        setIntake(0);
+    }
+
+
+
+    /*
+     * Runs the windmill at full power to feed the launcher, and the intake at half of that to
+     * push elements toward it, the same as the teleop's launch(). 0 stops them all.
+     */
+    private void setFeed(double windmillPower) {
+        windmillServo.setPower(windmillPower);
+            double intakePower = windmillPower * FEED_INTAKE_POWER;
+            intake.setPower(intakePower);
+            rightIntakeServo.setPower(intakePower);
+    }
+
+    /*
+     * Updates the follower until it finishes the current path (or the opmode stops).
+     */
+    private void followPath(Follower follower, String step) {
+        while (opModeIsActive() && follower.following()) {
+            follower.update();
+
+            telemetry.addData("Step", step);
+            telemetry.addData("Distance left (in)", "%.1f", follower.distanceToEndpoint());
+            addPoseTelemetry(follower);
+            telemetry.update();
+        }
+    }
+
+    /*
+     * Runs the intake motor and corner servo to pull elements in, without the windmill, the
+     * same as the right trigger in the teleop. 0 stops them.
+     */
+    private void setIntake(double power) {
+        intake.setPower(power);
+        rightIntakeServo.setPower(power);
+    }
+
+    private void addPoseTelemetry(Follower follower) {
+        Pose pose = follower.pose();
+        telemetry.addData("Pose", "x %.1f in, y %.1f in, heading %.1f deg",
+                pose.x(), pose.y(), Math.toDegrees(pose.heading()));
+    }
+}

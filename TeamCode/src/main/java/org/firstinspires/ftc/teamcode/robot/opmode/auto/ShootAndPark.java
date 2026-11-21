@@ -23,8 +23,8 @@ import org.firstinspires.ftc.teamcode.robot.config.LeftServoMemory;
  * BioBuzzStarterbotTeleopMecanum:
  *
  *   1. LAUNCH: spin the launcher up for LAUNCH_SECONDS. Once it is at speed, the windmill
- *      feeds elements into it and the intake helps push them along, just like holding the
- *      right bumper in the teleop.
+ *      feeds elements into it. Only the windmill runs; the intake and intake servos stay
+ *      off.
  *   2. STRAFE: drive STRAFE_INCHES to the right with Pedro Pathing, keeping the robot
  *      pointed the same way, then hold that spot until the end of autonomous.
  *
@@ -105,7 +105,7 @@ public class ShootAndPark extends LinearOpMode {
             follower.update();
             launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
             boolean atSpeed = launcher.getVelocity() > LAUNCHER_MIN_VELOCITY;
-            setFeed(atSpeed ? 1 : 0);
+            windmillServo.setPower(atSpeed ? 1 : 0); // windmill only; the intake stays off while launching
 
             telemetry.addData("Step", "LAUNCH (%.1f s left)", LAUNCH_SECONDS - launchTimer.seconds());
             telemetry.addData("Launcher", "%.0f / %d ticks/s %s", launcher.getVelocity(),

@@ -24,8 +24,8 @@ import org.firstinspires.ftc.teamcode.robot.config.LeftServoMemory;
  * BioBuzzStarterbotTeleopMecanum:
  *
  *   1. LAUNCH: spin the launcher up for LAUNCH_SECONDS. Once it is at speed, the windmill
- *      feeds elements into it and the intake helps push them along, just like holding the
- *      right bumper in the teleop.
+ *      feeds elements into it. Only the windmill runs; the intake and intake servos stay
+ *      off. In the last JIGGLE_SECONDS the robot drives JIGGLE_INCHES in +y and back.
  *   2. PICKUP: curve from start to pickupPrep through startToPickupPrepCtrlPoint with Pedro
  *      Pathing, then drive straight from pickupPrep to pickup, running the intake the whole way.
  *      Both legs run at PICKUP_SPEED_SCALE of top speed, then the robot pauses for
@@ -45,6 +45,11 @@ public class ShootPickupAndPark extends LinearOpMode {
     private static final double PICKUP_INTAKE_POWER = 1.0;
 
     private static final double LAUNCH_SECONDS = 7.0;
+
+    // In the last JIGGLE_SECONDS of the launch, drive JIGGLE_INCHES in +y and back to "jiggle"
+    // elements loose
+    private static final double JIGGLE_SECONDS = 2.0;
+    private static final double JIGGLE_INCHES = 3.0;
 
     // The pickup phase drives 40% slower than full speed (60% of the robot's top forward speed)
     // so the intake has time to grab elements, then pauses at the pickup spot before parking.
@@ -110,14 +115,28 @@ public class ShootPickupAndPark extends LinearOpMode {
         frontWedge.holdRememberedState(); // stays stowed/deployed as the last opmode left it
 
         /*
-         * 1. LAUNCH. The robot stays still; follower.update() keeps the position up to date.
+         * 1. LAUNCH. The robot stays still except for a short +y jiggle at the end;
+         *    follower.update() keeps the position up to date.
          */
+        Pose jiggle = poseFactory.of(start.x(), start.y() + JIGGLE_INCHES, 270);
+        int jiggleStep = 0; // 0 = not started, 1 = moving out, 2 = moving back
+
         ElapsedTime launchTimer = new ElapsedTime();
         while (opModeIsActive() && launchTimer.seconds() < LAUNCH_SECONDS) {
             follower.update();
+
+            // In the last JIGGLE_SECONDS, nudge +y and back to shake loose any stuck elements
+            if (jiggleStep == 0 && LAUNCH_SECONDS - launchTimer.seconds() <= JIGGLE_SECONDS) {
+                follower.follow(Paths.line(start, jiggle).linear(start, jiggle));
+                jiggleStep = 1;
+            } else if (jiggleStep == 1 && !follower.following()) {
+                follower.follow(Paths.line(jiggle, start).linear(jiggle, start));
+                jiggleStep = 2;
+            }
+
             launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
             boolean atSpeed = launcher.getVelocity() > LAUNCHER_MIN_VELOCITY;
-            setFeed(atSpeed ? 1 : 0);
+            windmillServo.setPower(atSpeed ? 1 : 0); // windmill only; the intake stays off while launching
 
             telemetry.addData("Step", "LAUNCH (%.1f s left)", LAUNCH_SECONDS - launchTimer.seconds());
             telemetry.addData("Launcher", "%.0f / %d ticks/s %s", launcher.getVelocity(),
@@ -137,11 +156,11 @@ public class ShootPickupAndPark extends LinearOpMode {
          */
         setIntake(PICKUP_INTAKE_POWER);
 
-        double pickupSpeed = PICKUP_SPEED_SCALE * Constants.foresightConfig.maxAchievableForwardVelocity.get();
-        Modifier slowForPickup = Constants.foresightConfig.maxPathSpeed.at(pickupSpeed);
+        // maxPathSpeed is a fraction of top speed (0-1), not a speed in in/s
+        Modifier slowForPickup = Constants.foresightConfig.maxPathSpeed.at(PICKUP_SPEED_SCALE);
 
         follower.follow(Paths.curve(start, startToPickupPrepCtrlPoint, pickupPrep)
-                .linear(start, pickupPrep).with(slowForPickup));
+                .linear(start, pickupPrep));
         followPath(follower, "PICKUP PREP (intake running, slow)");
 
         follower.follow(Paths.line(pickupPrep, pickup).linear(pickupPrep, pickup).with(slowForPickup));
@@ -181,15 +200,17 @@ public class ShootPickupAndPark extends LinearOpMode {
         setIntake(0);
     }
 
+
+
     /*
      * Runs the windmill at full power to feed the launcher, and the intake at half of that to
      * push elements toward it, the same as the teleop's launch(). 0 stops them all.
      */
     private void setFeed(double windmillPower) {
         windmillServo.setPower(windmillPower);
-        double intakePower = windmillPower * FEED_INTAKE_POWER;
-        intake.setPower(intakePower);
-        rightIntakeServo.setPower(intakePower);
+            double intakePower = windmillPower * FEED_INTAKE_POWER;
+            intake.setPower(intakePower);
+            rightIntakeServo.setPower(intakePower);
     }
 
     /*
